@@ -1,0 +1,268 @@
+#!/usr/bin/python
+from socket import *
+from thread import start_new_thread, allocate_lock
+import thread,urllib2,timeit,subprocess,resource,sys,getopt,MySQLdb
+
+#Setting OS values
+resource.setrlimit(resource.RLIMIT_NOFILE, (65536, 65536))
+
+#Setting initial variables
+INSTANCE = 1
+BUFF = 65535
+HOST = '0.0.0.0'
+PORT = 9000
+NUMP = 1
+COUNTRY = 1
+PULLINTERVAL = 600
+proxyList = []
+accessList = []
+lock = allocate_lock()
+
+#Mysql connection data
+MYSQLHOST="104.131.148.64"
+MYSQLUSER="backend"
+MYSQLPASS="Last#P478@symph092641dj2H8dsY"
+MYSQLDB="root_whmcs"
+
+
+def newUserValues():
+    global COUNTRY
+    global PULLINTERVAL
+    global COUNTRY
+    global INSTANCE
+    global HOST
+    global PORT
+    
+    try:
+        db = MySQLdb.connect(MYSQLHOST,MYSQLUSER,MYSQLPASS,MYSQLDB)
+        cursor = db.cursor()
+        cursor.execute("SELECT pool, time FROM mod_proxymngrtable WHERE instance_id = "+str(INSTANCE)+" and ip = '"+HOST+"' and port = "+str(PORT)+" ORDER BY id DESC LIMIT 1")
+        
+        rows = cursor.fetchall()
+        for row in rows:
+            if int(row[1]) < 600:
+                PULLINTERVAL = 600
+            else:
+                PULLINTERVAL = int(row[1])
+            COUNTRY = int(row[1])
+        
+        db.close()
+        
+    except:
+        print "Error conecting to the database."
+        return 3;
+        #sys.exit(3)
+
+def apiHandler():
+    global COUNTRY
+    proxylist = []
+    
+    try:
+        db = MySQLdb.connect(MYSQLHOST,MYSQLUSER,MYSQLPASS,MYSQLDB)
+        cursor = db.cursor()
+        cursor.execute("select mod_proxymngport.ip, mod_proxymngport.ports from mod_proxymngport, mod_proxymngproxyport where mod_proxymngport.id = mod_proxymngproxyport.proxylist and mod_proxymngproxyport.pool_id = %d ORDER BY RAND()" % COUNTRY)
+        
+        proxies = cursor.fetchall()
+        for proxy in proxies:
+            proxylist.append([proxy[0], proxy[1]])
+        
+        db.close()
+        if len(proxylist) > 0:
+            return proxylist
+        else:
+            print "Unable to obtain proxies."
+            return []
+            #sys.exit(3)
+    except:
+        print "Error conecting to the database."
+        return []
+        #sys.exit(3)
+
+#This maintains the connection between the local server and the remote proxy.
+def proxyhandler(clientsock,proxysock):
+    while 1:
+        try:
+            data = proxysock.recv(BUFF)
+            if not data: break
+        except:
+            clientsock.close()
+            proxysock.close()
+            thread.exit()
+            return
+
+        try:
+            clientsock.send(data)
+        except:
+            proxysock.close()
+            clientsock.close()
+            thread.exit()
+            return
+    
+    clientsock.close()
+    proxysock.close()
+    thread.exit()
+    return
+
+#This maintains the connection between the local server and the client
+def handler(clientsock,proxy):
+    #print 'connecting to proxy:', proxy
+    PROXYADDR = (proxy[0], int(proxy[1]))
+    try:
+        proxysock = socket(AF_INET, SOCK_STREAM)
+        proxysock.connect(PROXYADDR)
+        thread.start_new_thread(proxyhandler, (clientsock, proxysock))
+    except:
+        try:
+            proxysock = socket(AF_INET6, SOCK_STREAM)
+            proxysock.connect(PROXYADDR)
+            thread.start_new_thread(proxyhandler, (clientsock, proxysock))
+        except:
+            clientsock.close()
+            proxysock.close()
+            thread.exit()
+            return
+
+    while 1:
+        try:
+            data = clientsock.recv(BUFF)
+            if not data: break
+        except:
+            clientsock.close()
+            proxysock.close()
+            thread.exit()
+            return
+
+        try:
+            proxysock.send(data)
+        except:
+            proxysock.close()
+            clientsock.close()
+            thread.exit()
+            return
+    
+    proxysock.close()
+    clientsock.close()
+    thread.exit()
+    return
+
+def main(argv):
+   global PULLINTERVAL
+   global HOST
+   global PORT
+   global NUMP
+   global COUNTRY
+   try:
+      opts, args = getopt.getopt(argv,"hlp:t:c:i:",["port=","time=","country=","ip="])
+   except getopt.GetoptError:
+      print 'multiproxy [-i <ip> -p <port> -t <time> -c <pool>] [-l]'
+      sys.exit(1)
+   for opt, arg in opts:
+      if opt == '-h':
+         print 'multiproxy [-i <ip> -p <port> -t <time> -c <pool>] [-l]'
+         sys.exit(0)
+      elif opt in ("-l", "--list"):
+         db = MySQLdb.connect(MYSQLHOST,MYSQLUSER,MYSQLPASS,MYSQLDB)
+         cursor = db.cursor()
+         cursor.execute("SELECT * FROM mod_proxymngpool")
+         countries = cursor.fetchall()
+         print "Available pools:"
+         print "ID\t|\tPool"
+         print "------------------------------"
+         for country in countries:
+             print str(country[0]) + "\t|\t" + str(country[1])
+         
+         db.close()
+         sys.exit(0)
+      elif opt in ("-i", "--ip"):
+         if arg[0] == '-':
+             print 'multiproxy [-i <ip> -p <port> -t <time> -c <pool>] [-l]'
+             sys.exit(1)
+         else:
+             HOST = arg
+      elif opt in ("-p", "--port"):
+         if arg[0] == '-':
+             print 'multiproxy [-i <ip> -p <port> -t <time> -c <pool>] [-l]'
+             sys.exit(1)
+         else:
+             PORT = int(arg)
+      elif opt in ("-t", "--time"):
+         if arg[0] == '-':
+             print 'multiproxy [-i <ip> -p <port> -t <time> -c <pool>] [-l]'
+             sys.exit(1)
+         else:
+             if int(arg) < 600:
+                 PULLINTERVAL = 600
+             else:
+                 PULLINTERVAL = int(arg)
+
+      elif opt in ("-c", "--country"):
+         if arg[0] == '-':
+             print 'multiproxy [-i <ip> -p <port> -t <time> -c <pool number>] [-l]'
+             sys.exit(1)
+         else:
+             COUNTRY = int(arg)
+
+if __name__=='__main__':
+    #Parcing arguments
+    main(sys.argv[1:])
+    
+    #Get proxy list
+    proxyList = []
+    proxyList = apiHandler()
+
+    while len(proxyList) == 0:
+        proxyList = apiHandler()
+
+    #Create listening socket
+    ADDR = (HOST, PORT)
+    serversock = socket(AF_INET, SOCK_STREAM)
+    serversock.setsockopt(SOL_SOCKET, SO_REUSEADDR, 1)
+    
+    try:
+        #Trying to start server
+        serversock.bind(ADDR)
+        serversock.listen(5)
+    except:
+        #Unable to create server
+        print("Port %s:%d already in use." % (HOST, PORT))
+
+        sys.exit(2)
+    #Set starting value and get current time
+    i=0
+    start_time = timeit.default_timer()
+    while 1:
+        #Accept client on new connection
+        clientsock, addr = serversock.accept()
+        
+        #Calculate elapsed time since the last proxy change
+        elapsed = timeit.default_timer() - start_time
+        
+        #If the elapsed time is greater that the interval change to the next proxy in the pool
+        if elapsed > PULLINTERVAL:
+            i += 1
+            if not i < len(proxyList):
+                i=0
+            prevPool = COUNTRY
+            newUserValues()
+            if COUNTRY != prevPool:
+                tempProxy = proxyList
+                proxyList = []
+                proxyList = apiHandler()
+                i=0
+                if len(proxyList) == 0:
+                    print "Unable to obtain proxies from the database"
+                    proxyList = tempProxy
+            #Reseting timer
+            start_time = timeit.default_timer()
+            #print "Next proxy = "
+            #print proxyList[i]
+        
+        try:
+            #Creating new thread to manage client
+            thread.start_new_thread(handler, (clientsock, proxyList[i]))
+        except:
+            continue
+    
+    serversock.close()
+    sys.exit(0)
+
